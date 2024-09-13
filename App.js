@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity, Button } from 'react-native';
 import {BluetoothManager,BluetoothEscposPrinter,BluetoothTscPrinter} from 'react-native-bluetooth-escpos-printer';
 import KeepAwake from 'react-native-keep-awake';
+import DeviceInfo from 'react-native-device-info';
+import Icon from 'react-native-vector-icons/Ionicons';
 
 const MyApp = () => {
   const [printer, setPrinter] = useState(undefined);
   const [loading, setLoading] = useState(true); // Estado para o carregamento
+  const [mensagemLoading, setMensagemLoading] = useState('');
+  const [isErro, setErro] = useState(false);
+  const [mensagemErro, setMensagemErro] = useState('');
+  const [autorizado, setAutorizado] = useState(false);
+  const [nrDispositivo, setNrDispositivo] = useState('');
   const impressorasHabilitadas = ["MPT-II", "MPT-III", "MPT-XS"];
+
 
   function changeKeepAwake(shouldBeAwake) {
     if (shouldBeAwake) {
@@ -15,39 +23,114 @@ const MyApp = () => {
       KeepAwake.deactivate();
     }
   }
+   
+  const handleSubmit = async () => {
+    const url = 'http://192.168.0.116:8080/smartphones'; // URL do servidor
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST', // método HTTP
+        headers: {
+          'Content-Type': 'application/json', // tipo de conteúdo
+        },
+        body: JSON.stringify({
+          nrIdentificacao: nrDispositivo,
+        }),
+      });
+      const json = await response.json();
+      setAutorizado(json.ativo);
+      console.log("BATATA ", json, response)
+      
+    } catch (error) {
+        setErro(true);
+        setMensagemErro(error.message);
+    }finally{
+      if(!autorizado){
+        setErro(true);
+        console.log("lkdsfjkdlsjfdlksjfdkslfjdslk")
+        setMensagemErro('Smartphone não autorizado para gerar fichas, favor liberar no Portal!');
+      }
+    }
+  };
+
+  const solicitarFicha = async (identPrioridade) => {
+    const url = 'http://192.168.0.116:8080/fichas/' + nrDispositivo; // URL do servidor
+    try {
+      const response = await fetch(url, {
+        method: 'POST', // método HTTP
+        headers: {
+          'Content-Type': 'application/json', // tipo de conteúdo
+        },
+        body: JSON.stringify({
+          identPrioridade: identPrioridade,
+        }),
+      });
+      const json = await response.json();
+      if(response.status === 201){
+        print(json);
+      }
+      
+    } catch (error) {
+        setErro(true);
+        setMensagemErro(error.message);
+    } finally{
+      
+    }
+  };
+  const buscarDispositivos = async () => {
+    try {
+      setNrDispositivo(await DeviceInfo.getUniqueId());
+      setMensagemLoading("Buscando informações no servidor...")
+      handleSubmit()//verifica se o smartphone está apto para enviar fichas
+      if(!autorizado){
+        return;
+      }
+      setMensagemLoading("Buscando impressora...")
+      const s = await BluetoothManager.scanDevices();
+      let pareados = JSON.parse(s).paired;
+      let encontrados = JSON.parse(s).found;
+      if(pareados.length > 0){
+          const printerCandidate = buscarPareadas(pareados);
+          if(printerCandidate !==null){//pode n encontrar pareadas, precisa buscar as não pareadas
+            setPrinter(printerCandidate);
+          }else{
+            if(encontrados.length > 0){
+              printerCandidate = buscarNaoPareadas(encontrados);
+              if(printerCandidate !==null){//pode n encontrar pareadas, precisa buscar as não pareadas
+                setPrinter(printerCandidate);
+              }else{
+                setErro(true);
+                setMensagemErro("Nenhuma Impressora encontrada!");
+                return
+              }
+            }else{
+              setErro(true);
+              setMensagemErro("Nenhuma Impressora encontrada!");
+              return
+            }
+          }
+      }else{
+        setErro(true);
+        setMensagemErro("Nenhuma Impressora encontrada!");
+        return
+      }
+    } catch (error) {
+      setErro(true);
+      setMensagemErro("Erro ao buscar dispositivos pareados: " + error.getMessage);
+      return
+    } finally {
+      setMensagemLoading("Buscando informações no servidor...")
+      handleSubmit()//verifica se o smartphone está apto para enviar fichas
+      if(!autorizado){
+        return;
+      }
+      setLoading(false); // Terminar o carregamento
+    }
+  };
 
   useEffect(() => {
     changeKeepAwake(true);
-    const buscarDispositivos = async () => {
-      try {
-        const s = await BluetoothManager.scanDevices();
-        let pareados = JSON.parse(s).paired;
-        let encontrados = JSON.parse(s).found;
-        if(pareados.length > 0){
-            const printerCandidate = buscarPareadas(pareados);
-            if(printerCandidate !==null){//pode n encontrar pareadas, precisa buscar as não pareadas
-              setPrinter(printerCandidate);
-            }else{
-              if(encontrados.length > 0){
-                printerCandidate = buscarNaoPareadas(encontrados);
-                if(printerCandidate !==null){//pode n encontrar pareadas, precisa buscar as não pareadas
-                  setPrinter(printerCandidate);
-                }else{
-                  console.log("Nenhuma Impressora encontrada!")
-                }
-              }else{
-                console.log("Nenhuma Impressora encontrada!")
-              }
-            }
-        }else{
-          console.log("Nenhuma Impressora encontrada!")
-        }
-      } catch (error) {
-        console.log('Erro ao buscar dispositivos pareados:', error);
-      } finally {
-        setLoading(false); // Terminar o carregamento
-      }
-    };
+    
 
     buscarDispositivos();
   }, []);
@@ -100,11 +183,10 @@ const MyApp = () => {
     connectToPrinter();
   }, [printer]);
 
-  const print = async () => {
+  const print = async (json) => {
      try {
-      let ficha = "N00005135";
       await BluetoothEscposPrinter.setBlob(8);
-      await  BluetoothEscposPrinter.printText("Lojas Havan Pelotas\n\n",{
+      await  BluetoothEscposPrinter.printText(`${json.empresa['nomeFantasia']}\n\n`,{
         encoding:'GBK',
         codepage:0,
         widthtimes:0,
@@ -120,7 +202,7 @@ const MyApp = () => {
       });
       await BluetoothEscposPrinter.printerAlign(BluetoothEscposPrinter.ALIGN.CENTER);
       await BluetoothEscposPrinter.setBlob(5);
-      await  BluetoothEscposPrinter.printText(`\n${ficha}\n\n\n`,{
+      await  BluetoothEscposPrinter.printText(`\n${json['identPrioridade'].toString()[0]}${json['numero'].toString().padStart(8, '0')}\n\n`,{
         encoding:'GBK',
         codepage:0,
         widthtimes:3,
@@ -137,48 +219,50 @@ const MyApp = () => {
         heigthtimes:0,
         fonttype:0
       });
-      await  BluetoothEscposPrinter.printText("Siga @TaskTime\n\n\n\n",{
+      await  BluetoothEscposPrinter.printText("Siga @TaskTime\n\n\n",{
         encoding:'GBK',
         codepage:0,
         widthtimes:0,
         heigthtimes:0,
         fonttype:1
       });
-      console.log(ficha)
      } catch (error) {
         console.error("Erro ao imprimir:", error);
      }
   };
 
-  const printHelloWorld = async () => {
-    if (!printer) {
-      console.warn("Nenhuma impressora conectada.");
-      return;
-    }
 
-    try {
-      print(); // Parâmetros opcionais
-    } catch (error) {
-      console.error("Erro ao imprimir: ", error);
-    }
+  const handleRetry = () => {
+    // Lógica para tentar novamente
+    setErro(false);
+    setLoading(true);
+    buscarDispositivos();
   };
 
   return (
     <View style={styles.container}>
-      {loading ? (
+      {isErro ? (
+        <View style={styles.containerError}>
+        <Text style={styles.errorText}>{mensagemErro}</Text>
+        <Button
+          title="Tentar Novamente"
+          onPress={() => {
+            handleRetry()
+          }}
+        />
+      </View>
+      ) : loading ? (
         <>
           <ActivityIndicator size="large" color="#00BCD4" />
-          <Text style={styles.loadingText}>Buscando Impressora...</Text>
+          <Text style={styles.loadingText}>{mensagemLoading}</Text>
         </>
       ) : (
         <>
           <Text style={styles.title}>Escolha seu atendimento:</Text>
-      
-          <TouchableOpacity style={[styles.button, styles.preferencialButton]}>
+          <TouchableOpacity style={[styles.button, styles.preferencialButton]} onPress={() =>solicitarFicha("PRIORITARIO")}>
             <Text style={styles.buttonText}>PREFERENCIAL</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity style={[styles.button, styles.normalButton]}>
+          <TouchableOpacity style={[styles.button, styles.normalButton]} onPress={() =>solicitarFicha("NORMAL")}>
             <Text style={styles.buttonText}>NORMAL</Text>
           </TouchableOpacity>
         </>
@@ -223,6 +307,15 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 26, // Aumenta o tamanho da label
     fontWeight: 'bold',
+  },
+  containerError: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: 18,
+    marginBottom: 20,
   },
 });
 
