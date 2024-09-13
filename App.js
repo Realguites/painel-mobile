@@ -47,7 +47,6 @@ const MyApp = () => {
     }finally{
       if(!autorizado){
         setErro(true);
-        console.log("lkdsfjkdlsjfdlksjfdkslfjdslk")
         setMensagemErro('Smartphone não autorizado para gerar fichas, favor liberar no Portal!');
       }
     }
